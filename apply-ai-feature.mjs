@@ -49,7 +49,7 @@ check('app/reader/components/annotator/Annotator.tsx', [
   "from './SelectionAIPopup'",
   '<SelectionAIPopup />',
   'handleAskAI',
-  'annotationToolButtons',
+  'annotationToolbarButtons',
 ]);
 if (failed) {
   log('组件挂载点不完整，构建终止（避免打出一个没有「问 AI」按钮的包）。');

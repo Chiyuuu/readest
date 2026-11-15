@@ -2729,7 +2729,7 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets; gridInsets?:
     .filter((button): button is NonNullable<typeof button> => button !== null);
 
   // 工具栏最前面挂一个「✨ 问 AI」，与原生工具按钮同一套渲染管线
-  const annotationToolButtons = [
+  const annotationToolbarButtons = [
     { tooltipText: _('Ask AI'), Icon: RiSparklingLine, onClick: handleAskAI },
     ...toolButtons,
   ];
@@ -2873,7 +2873,7 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets; gridInsets?:
             bookKey={bookKey}
             dir={viewSettings.rtl ? 'rtl' : 'ltr'}
             isVertical={viewSettings.vertical}
-            buttons={annotationToolButtons}
+            buttons={annotationToolbarButtons}
             notes={annotationNotes}
             onEditNote={handleEditNote}
             noteEditor={
