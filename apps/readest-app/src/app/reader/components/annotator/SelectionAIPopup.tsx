@@ -3,6 +3,7 @@ import {
   useAIAskStore,
   AIChatMessage,
   QuickPromptChip,
+  DEFAULT_PROVIDERS,
 } from '@/store/aiAskStore';
 import {
   streamSelectionAsk,
@@ -41,8 +42,11 @@ export const SelectionAIPopup: React.FC<SelectionAIPopupProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // providers 可能为空（persist 合并/迁移时），兜底到内置默认服务商，避免 undefined
   const activeProvider =
-    providers.find((p) => p.id === activeProviderId) || providers[0];
+    providers.find((p) => p.id === activeProviderId) ??
+    providers[0] ??
+    DEFAULT_PROVIDERS[0]!;
 
   useEffect(() => {
     if (scrollContainerRef.current) {

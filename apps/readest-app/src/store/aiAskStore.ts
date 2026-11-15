@@ -178,9 +178,10 @@ export const useAIAskStore = create<AIAskState>()(
         set((state) => {
           const updated = [...state.messages];
           for (let i = updated.length - 1; i >= 0; i--) {
-            if (updated[i].role === 'assistant') {
+            const msg = updated[i];
+            if (msg && msg.role === 'assistant') {
               updated[i] = {
-                ...updated[i],
+                ...msg,
                 content,
                 ...(reasoning !== undefined ? { reasoning } : {}),
               };

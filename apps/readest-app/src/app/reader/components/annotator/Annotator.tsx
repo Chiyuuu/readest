@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { RiDeleteBinLine } from 'react-icons/ri';
+import { RiDeleteBinLine, RiSparklingLine } from 'react-icons/ri';
 
 import * as CFI from 'foliate-js/epubcfi.js';
 import { useEnv } from '@/context/EnvContext';
@@ -100,6 +100,8 @@ import AnnotationRangeEditor from './AnnotationRangeEditor';
 import PageTurnHint from './PageTurnHint';
 import SelectionRangeEditor from './SelectionRangeEditor';
 import AnnotationPopup from './AnnotationPopup';
+import { SelectionAIPopup } from './SelectionAIPopup';
+import { useAIAskStore } from '@/store/aiAskStore';
 import DictionaryPopup from './DictionaryPopup';
 import type { VocabularyCapture } from './DictionaryResultsView';
 import { vocabularyLang } from '@/services/vocabulary/entry';
@@ -2646,6 +2648,20 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets; gridInsets?:
     });
   };
 
+  // 划词「问 AI」：把当前选中文字交给选段 AI 面板（Anx Reader 风格）
+  const handleAskAI = () => {
+    if (!selection || !selection.text) return;
+    setShowAnnotPopup(false);
+    void suppressNativeSelectionHandles();
+    useAIAskStore.getState().openAskPopup({
+      selectedText: selection.text,
+      surroundingContext: selection.text,
+      bookTitle: bookData.book?.title,
+      bookAuthor: bookData.book?.author,
+      cfi: selection.cfi,
+    });
+  };
+
   const selectionAnnotated = selection?.annotated;
   // A popup-window selection without a CFI (data-attribute footnotes render
   // synthesized text with no real text node in the book) can't anchor
@@ -2711,6 +2727,12 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets; gridInsets?:
   const toolButtons = toolbarToolTypes
     .map(buildToolButton)
     .filter((button): button is NonNullable<typeof button> => button !== null);
+
+  // 工具栏最前面挂一个「✨ 问 AI」，与原生工具按钮同一套渲染管线
+  const annotationToolButtons = [
+    { tooltipText: _('Ask AI'), Icon: RiSparklingLine, onClick: handleAskAI },
+    ...toolButtons,
+  ];
 
   // The lookup popups never deselect (handleDictionary / handleTranslation /
   // handleProofread only flip popup flags), so a genuine selection is still
@@ -2851,7 +2873,7 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets; gridInsets?:
             bookKey={bookKey}
             dir={viewSettings.rtl ? 'rtl' : 'ltr'}
             isVertical={viewSettings.vertical}
-            buttons={toolButtons}
+            buttons={annotationToolButtons}
             notes={annotationNotes}
             onEditNote={handleEditNote}
             noteEditor={
@@ -2998,6 +3020,7 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets; gridInsets?:
           </div>
         </div>
       )}
+      <SelectionAIPopup />
     </div>
   );
 };
