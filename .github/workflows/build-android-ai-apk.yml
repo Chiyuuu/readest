@@ -1,0 +1,162 @@
+name: Build Android APK (AI Selection + Unlocked)
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: '编译目标架构 (arm64 适合绝大多数新手机且速度快；universal 包含全架构)'
+        required: true
+        default: 'aarch64'
+        type: choice
+        options:
+          - aarch64
+          - universal
+      create_release:
+        description: '是否同时发布到 GitHub Releases 页面供直接下载'
+        required: true
+        default: true
+        type: boolean
+  push:
+    tags:
+      - 'v*-ai*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-android-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 1. 检出源码与子模块 (Checkout)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 2. 安装 Node.js 24 与 pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: 全局安装 pnpm
+        run: npm install -g pnpm
+
+      - name: 3. 配置 Java 17 与 Android SDK / NDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 Android NDK 与 Rust 交叉编译目标
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: 配置 NDK 环境变量
+        run: |
+          sdkmanager --install "ndk;27.0.12077973" "build-tools;34.0.0" "platforms;android-34"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - name: 4. 安装前端与 Tauri 依赖并准备 PDF.js 资源
+        run: |
+          pnpm install
+          pnpm --filter @readest/readest-app setup-vendors
+
+      - name: 5. 自动执行 AI 划词组件注入与官方 AI 功能解锁脚本
+        run: |
+          if [ -f "apply-ai-feature.mjs" ]; then
+            node apply-ai-feature.mjs
+          fi
+
+      - name: 6. 编译 Tauri Android APK
+        working-directory: apps/readest-app
+        run: |
+          if [ "${{ github.event.inputs.arch }}" = "universal" ]; then
+            npx dotenv -e .env.tauri -- pnpm tauri android build --apk true
+          else
+            npx dotenv -e .env.tauri -- pnpm tauri android build --apk true -t aarch64
+          fi
+
+      - name: 7. 配置/复用签名密钥并对 APK 进行 V2/V3 签名 (确保手机可直接安装与无缝覆盖升级)
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'readest123' }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'readest_ai' }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || 'readest123' }}
+        run: |
+          KEYSTORE_PATH="$RUNNER_TEMP/readest-release.keystore"
+          mkdir -p "$RUNNER_TEMP/signed_output"
+
+          if [ -n "$SIGNING_KEYSTORE_BASE64" ]; then
+            echo "🔐 检测到已配置持久化签名 Secret (ANDROID_KEYSTORE_BASE64)，正在解码复用现有签名..."
+            echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+          else
+            echo "⚡ 未检测到持久化 Secret，自动生成本次构建签名证书并导出备份..."
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_PATH" \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -keypass "$KEY_PASSWORD" \
+              -dname "CN=ReadestAI, OU=Dev, O=ReadestMod, L=Local, S=Local, C=CN"
+
+            echo "==================== 持久化签名配置指引 ===================="
+            echo "为了以后每次打包都能直接无缝覆盖安装（不提示签名冲突），请将以下生成的 Base64 字符串"
+            echo "复制并添加到 GitHub 仓库 Settings -> Secrets and variables -> Actions 中，"
+            echo "Secret 名称设置为: ANDROID_KEYSTORE_BASE64"
+            echo "============================================================"
+            base64 -w 0 "$KEYSTORE_PATH" > "$RUNNER_TEMP/signed_output/keystore_base64.txt"
+            cat "$RUNNER_TEMP/signed_output/keystore_base64.txt"
+            echo ""
+            echo "============================================================"
+            cp "$KEYSTORE_PATH" "$RUNNER_TEMP/signed_output/readest-signing.keystore"
+          fi
+
+          UNSIGNED_APK=$(find apps/readest-app/src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          echo "找到编译产物: $UNSIGNED_APK"
+
+          ZIPALIGN="$ANDROID_HOME/build-tools/34.0.0/zipalign"
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+
+          "$ZIPALIGN" -v -p 4 "$UNSIGNED_APK" "$RUNNER_TEMP/signed_output/readest-aligned.apk"
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE_PATH" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out "$RUNNER_TEMP/signed_output/Readest-AI-Unlocked-arm64.apk" \
+            "$RUNNER_TEMP/signed_output/readest-aligned.apk"
+
+          ls -lh "$RUNNER_TEMP/signed_output/"
+
+      - name: 8. 上传已签名 APK 与持久化签名证书到 GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Readest-AI-Unlocked-Android-APK
+          path: |
+            ${{ runner.temp }}/signed_output/Readest-AI-Unlocked-arm64.apk
+            ${{ runner.temp }}/signed_output/readest-signing.keystore
+            ${{ runner.temp }}/signed_output/keystore_base64.txt
+
+      - name: 9. 自动发布到 GitHub Releases (方便手机直接下载安装与获取永久签名文件)
+        if: ${{ github.event.inputs.create_release != 'false' || startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.12.20-ai.${{ github.run_number }}
+          name: "Readest AI 增强解锁版 (Build #${{ github.run_number }})"
+          body: |
+            ### ✨ 本次自动编译包含以下改造：
+            1. **Anx Reader 风格划词「✨ 问 AI」面板**：支持选中书中文字后直接点击快捷指令胶囊（深度解析、提炼要点、语境精译、背景考据、批判思考）及多轮连续追问，支持一键存入批注笔记。
+            2. **官方内置 AI 功能全解锁**：自动解除 `Custom Translators`（自定义 OpenAI/DeepSeek/Gemini 翻译器）与 `Context Dictionary`（AI 语境词典）的付费墙限制。
+            3. **已自动完成 APK 签名**：直接下载下方 `Readest-AI-Unlocked-arm64.apk` 即可在 Android 手机/平板/电纸书上安装使用。
+            
+            > 💡 **永久无缝升级提示**：下方附件中包含了本次打包使用的 `keystore_base64.txt`。若希望以后每次更新都能直接覆盖安装（不报签名冲突），请将该文本内容复制并添加到仓库 `Settings -> Secrets and variables -> Actions` 中，命名为 `ANDROID_KEYSTORE_BASE64` 即可。
+          files: |
+            ${{ runner.temp }}/signed_output/Readest-AI-Unlocked-arm64.apk
+            ${{ runner.temp }}/signed_output/readest-signing.keystore
+            ${{ runner.temp }}/signed_output/keystore_base64.txt
